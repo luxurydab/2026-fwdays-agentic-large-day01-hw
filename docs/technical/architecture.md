@@ -1,182 +1,260 @@
 # Architecture
 
-## System Breakdown
+## High-level Architecture
 
-### Root Workspace
-- Purpose:
-  - workspace orchestration
-  - shared scripts
-  - quality gates
-  - deployment configuration
-- Key files:
-  - `package.json`
-  - `vitest.config.mts`
-  - `Dockerfile`
-  - `docker-compose.yml`
-  - `vercel.json`
-  - `scripts/*`
+This repository is a client-heavy TypeScript monorepo built around one hosted web app and a set of reusable packages. The browser is the primary execution environment; backend services are used for collaboration, persistence, sharing, AI features, and telemetry rather than for server-side rendering or domain orchestration.
 
-### Main Application: `excalidraw-app`
-- Responsibility:
-  - hosted product UI and runtime orchestration
-  - app-specific integrations not suitable for the core npm package
-- Important modules:
-  - `App.tsx`
-    - startup path selection
-    - import/collab/share-link bootstrapping
-    - app-wide UI composition
-  - `collab/Collab.tsx`
-    - collaboration lifecycle
-    - websocket coordination
-    - firebase save/load coordination
-    - offline state handling
-  - `collab/Portal.tsx`
-    - socket event bridge
-    - encryption before network emit
-    - throttled file upload handling
-  - `data/LocalData.ts`
-    - local scene/file persistence
-    - quota handling
-    - image cleanup
-  - `data/firebase.ts`
-    - Firestore scene persistence
-    - Firebase Storage file upload/load
-  - `data/index.ts`
-    - share-link import/export
-    - collaboration link helpers
-    - syncable element filtering
-  - `components/AI.tsx`
-    - Diagram-to-Code and TTD feature composition
-  - `share/ShareDialog.tsx`
-    - collaboration/share-link user entry point
-  - `useHandleAppTheme.ts`
-    - theme restoration and system-theme behavior
-  - `app-language/*`
-    - language detection and persisted selection
-  - `sentry.ts`
-    - runtime telemetry and error filtering
+### Workspace Layers
 
-### Packages
+#### Root Workspace
+- Orchestrates yarn workspaces, shared build scripts, linting, tests, Docker, and deployment configuration.
+- Owns repo-wide entrypoints such as `package.json`, `Dockerfile`, `docker-compose.yml`, `vercel.json`, `vitest.config.mts`, and `scripts/*`.
 
-#### `packages/excalidraw`
-- Public React component package.
-- Exports production/development bundles and type-only subpaths.
-- Contains the reusable editor engine and UI used both by the app and external consumers.
+#### Hosted Application: `excalidraw-app`
+- Contains the production SPA shell, runtime integrations, and product-specific UI.
+- Boots from `index.tsx`, then composes the app in `App.tsx` around the reusable `@excalidraw/excalidraw` component.
+- Keeps hosted-only concerns out of the published package:
+  - collaboration lifecycle in `collab/Collab.tsx` and `collab/Portal.tsx`
+  - local persistence in `data/LocalData.ts`
+  - Firebase persistence in `data/firebase.ts`
+  - share-link import/export in `data/index.ts`
+  - app-specific menus, dialogs, footer, sidebar, AI, telemetry, and theme handling
 
-#### `packages/element`
-- Element creation, geometry, ordering, binding, collision, and element-specific logic.
+#### Shared Packages
+- `packages/excalidraw`
+  - reusable React editor package consumed by the hosted app and external integrators
+  - owns the editor UI, event handling, rendering coordination, export paths, and public API surface
+- `packages/element`
+  - element data structures, mutation helpers, ordering, hit testing, bindings, and the scene model
+- `packages/math`
+  - geometry and vector primitives used throughout drawing and selection logic
+- `packages/common`
+  - shared constants, feature flags, helpers, branded types, and utilities
+- `packages/utils`
+  - extra standalone utilities with a separate release cadence
 
-#### `packages/math`
-- Shared math/vector utilities used by drawing and geometry code.
+#### Example Integrations
+- `examples/with-nextjs` demonstrates client-only embedding in a Next.js app
+- `examples/with-script-in-browser` demonstrates direct browser usage without the hosted app shell
 
-#### `packages/common`
-- Shared constants, utility helpers, feature flags, and cross-package primitives.
-
-#### `packages/utils`
-- Additional support utilities with a separate release cadence.
-
-### Examples
-- `examples/with-nextjs`
-  - demonstrates client-only SSR-safe integration
-- `examples/with-script-in-browser`
-  - demonstrates standalone browser usage
-
-## Runtime Topology
+### Runtime Topology
 
 ```text
 Browser
   |
-  |-- Excalidraw SPA (React + Vite bundle)
+  |-- Excalidraw SPA (React + Vite)
   |     |
-  |     |-- Local state: localStorage
-  |     |-- Local files/library/TTD: IndexedDB
-  |     |-- Realtime sync: Socket.IO server
-  |     |-- Scene persistence: Firestore
-  |     |-- File persistence: Firebase Storage
+  |     |-- Editor runtime: @excalidraw/excalidraw
+  |     |-- Local scene/app state: localStorage
+  |     |-- Local binary/library/chat data: IndexedDB
+  |     |-- Realtime sync: Socket.IO collaboration server
+  |     |-- Room snapshots: Firebase Firestore
+  |     |-- Binary files: Firebase Storage
   |     |-- Share links: Backend V2 GET/POST API
-  |     |-- AI features: AI backend
-  |     \-- Error telemetry: Sentry
+  |     |-- AI features: external AI backend
+  |     \-- Telemetry: Sentry
   |
   \-- Static hosting: Vercel or Nginx container
 ```
 
-## Infrastructure
-- Hosting:
-  - Vercel config for production deployment
-  - optional Docker image for containerized deployment
-- Container path:
-  - build stage installs deps and runs `yarn build:app:docker`
-  - runtime stage serves `excalidraw-app/build` via Nginx
-- Firebase:
-  - Firestore stores encrypted scene snapshots under `scenes/<roomId>`
-  - Storage stores files under `/files/rooms/<roomId>/...` and `/files/shareLinks/<id>/...`
-- External service assumptions:
-  - collaboration server compatible with current Socket.IO event contract
-  - share backend compatible with Backend V2 endpoints
-  - AI backend exposes diagram-to-code and text-to-diagram APIs
+### Deployment and Infrastructure
 
-## Data Storage Design
+- Production hosting can be done through Vercel or through the provided multi-stage Docker build.
+- The Docker path builds the app with Node.js and serves `excalidraw-app/build` from Nginx.
+- Firebase is split by concern:
+  - Firestore stores encrypted room scene snapshots
+  - Storage stores room and share-link file blobs
+- The monorepo intentionally does not contain all runtime services. Collaboration, share-link, and AI backends are external dependencies with stable client contracts.
+- During local development, the app resolves workspace package aliases directly to source files in `packages/*`, so the hosted app and package code run against the same implementation.
 
-### Local Browser Storage
-- `localStorage`
-  - elements: `excalidraw`
-  - app state: `excalidraw-state`
-  - collab metadata: `excalidraw-collab`
-  - theme: `excalidraw-theme`
-  - version markers: `version-dataState`, `version-files`
-- IndexedDB
-  - `files-db/files-store` for image binaries
-  - `excalidraw-library-db/excalidraw-library-store` for library data
-  - `excalidraw-ttd-chats-db/excalidraw-ttd-chats-store` for TTD chats
+## Data Flow
 
-### Remote Storage
-- Firestore scene document fields:
-  - `sceneVersion`
-  - `ciphertext`
-  - `iv`
-- Firebase Storage object prefixes:
-  - `files/rooms/<roomId>`
-  - `files/shareLinks/<shareId>`
+### Startup and Scene Hydration
 
-## Integration Points
-- Socket.IO server:
-  - room join/init
-  - scene update broadcasts
-  - volatile cursor and visibility broadcasts
-- Share backend:
-  - GET scene payload by id
-  - POST encrypted scene payload
-- AI backend:
-  - `/v1/ai/diagram-to-code/generate`
-  - `/v1/ai/text-to-diagram/chat-streaming`
-- Sentry:
-  - release tagging via `VITE_APP_GIT_SHA`
-  - environment selection from hostname
+1. `excalidraw-app/index.tsx` registers the service worker and mounts the React tree.
+2. `App.tsx` initializes app-wide listeners and examines the URL for one of several entry paths:
+   - local scene restore
+   - share-link import via `#json=`
+   - collaboration room via `#room=`
+   - external file import via `#url=`
+3. Local scene state is restored from browser storage first.
+4. If an external scene is requested, the app may prompt before overwriting current content.
+5. For collaboration rooms, the remote scene is loaded and then reconciled against the current editor state instead of blindly replacing it.
 
-## Critical Sequences
+### Local Editing and Persistence
 
-### App Startup
-1. Polyfills and PWA install listener are registered early.
-2. App checks URL for share-link, room link, or external URL import.
-3. Local state is restored from browser storage.
-4. If external data is requested, user may be prompted before overwrite.
-5. If collaboration is active, scene comes from collaboration bootstrap and then reconciles with current editor state.
+1. User input changes the editor scene inside `@excalidraw/excalidraw`.
+2. The hosted app receives `onChange(elements, appState, files)` from the editor.
+3. `LocalData.save()` debounces persistence work:
+   - scene elements and app state go to `localStorage`
+   - binary files go to IndexedDB via `idb-keyval`
+4. Cross-tab version markers are updated so newer browser state can win when multiple tabs are open.
+5. Image file statuses are updated after successful local file persistence.
 
-### Collaboration Save Path
-1. Editor change is filtered to syncable elements.
-2. Portal encrypts payload and emits scene update over WebSocket.
-3. Firebase save path persists reconciled scene snapshot.
-4. Files are uploaded separately and image status is updated to `saved` when appropriate.
+### Collaboration Flow
 
-### Share-Link Export Path
-1. Scene is serialized as JSON.
-2. Payload is compressed and encrypted client-side.
-3. Backend stores opaque scene payload.
-4. Files are uploaded to Firebase Storage using the share ID.
-5. Client constructs a URL whose hash contains the decryption key.
+1. The app creates and exposes a collaboration API through `collab/Collab.tsx`.
+2. On every editor change, `App.tsx` forwards the current element set to `collabAPI.syncElements()` when collaboration is active.
+3. Collaboration code filters to syncable elements, encrypts the payload, and emits updates over Socket.IO.
+4. Firestore stores encrypted scene snapshots for recovery and late joiners.
+5. Firebase Storage handles image/file uploads separately from scene JSON.
+6. Incoming remote updates are reconciled against the current scene instead of treated as authoritative server state.
 
-## Architectural Constraints
-- Browser storage is a first-class dependency, not a cache afterthought.
-- Collaboration correctness relies on element reconciliation rather than authoritative server-side domain logic.
-- Security model depends on client-side encryption and secret material staying in URL fragments.
-- The frontend app and published package share internals through aliases during development, so path discipline matters.
+### Share-Link and Import/Export Flow
+
+1. The current scene is serialized by the editor and app shell.
+2. Share-link export compresses and encrypts the payload client-side.
+3. The opaque payload is sent to the Backend V2 API.
+4. Associated files are uploaded to Firebase Storage under a share-specific prefix.
+5. The resulting URL stores the decryption key in the hash fragment.
+6. Import follows the reverse path, with remote payloads decrypted and restored into editor state.
+
+### AI and Ancillary Flows
+
+- Diagram-to-Code and Text-to-Diagram features live in the hosted app and call an external AI backend.
+- TTD chat history is persisted in IndexedDB rather than localStorage.
+- Telemetry initialization happens early through `sentry.ts`, but it observes the app rather than shaping editor state.
+
+## State Management
+
+### In-Memory Editor State
+
+- The canonical drawing state is centered on the `Scene` model from `packages/element/src/Scene.ts`.
+- `Scene` stores:
+  - all elements, including deleted ones
+  - derived non-deleted maps and frame collections
+  - selection caches
+  - a scene nonce used for render invalidation
+- Scene mutations eventually call `scene.triggerUpdate()`, which notifies the editor runtime that a redraw is required.
+- The core editor also tracks app state, history, and interaction state inside `packages/excalidraw`, where the main editor `App` subscribes to scene updates.
+
+### Editor-Scoped UI State
+
+- `packages/excalidraw/editor-jotai.ts` defines an isolated Jotai store for editor-internal UI state.
+- This store is provided by `EditorJotaiProvider` inside the public `Excalidraw` component.
+- It is used for editor-owned UI concerns such as dialogs, command palette state, language state, library state, and other package-internal controls.
+- Isolation matters because the published package should not leak or depend on the hosted app's atoms.
+
+### Hosted-App State
+
+- `excalidraw-app/app-jotai.ts` defines a separate Jotai store for product-specific concerns.
+- App-level atoms cover concerns that do not belong in the reusable editor package, including:
+  - collaboration API availability
+  - collaboration/offline status
+  - share dialog visibility
+  - localStorage quota warnings
+  - app language selection
+- This split keeps the npm package embeddable while allowing the hosted app to add product features on top.
+
+### Persisted State and Browser Coordination
+
+- `localStorage` stores lightweight scene and app metadata such as:
+  - elements
+  - app state
+  - collaboration metadata
+  - theme
+  - browser-state version markers
+- IndexedDB stores heavier or structured data:
+  - image binaries in `files-db/files-store`
+  - library data in `excalidraw-library-db/excalidraw-library-store`
+  - TTD chat history in `excalidraw-ttd-chats-db/excalidraw-ttd-chats-store`
+- Remote persistence is layered on top of local-first behavior:
+  - Firestore stores encrypted scene snapshots
+  - Firebase Storage stores encrypted or upload-processed binary assets
+- Cross-tab arbitration relies on version timestamps rather than transactions, which is simple but intentionally lightweight.
+
+## Rendering Pipeline
+
+### Entry and Render Ownership
+
+1. React mounts the hosted app.
+2. The hosted app renders the public `Excalidraw` component from `packages/excalidraw`.
+3. The package-level editor `App` subscribes to `scene.onUpdate(this.triggerRender)`.
+4. Scene mutations or editor-state changes invalidate rendering and schedule redraw work.
+
+### Static vs Interactive Rendering
+
+The editor splits canvas work into two distinct rendering paths.
+
+#### Static Scene
+- Implemented in `packages/excalidraw/renderer/staticScene.ts`.
+- Responsible for painting stable scene content such as:
+  - background and grid
+  - frames and regular elements
+  - element links and clipped frame content
+- Uses normalized canvas dimensions and bootstraps the canvas with theme, scaling, and background settings.
+- Delegates element painting to shared element rendering logic from `@excalidraw/element`.
+
+#### Interactive Scene
+- Implemented in `packages/excalidraw/renderer/interactiveScene.ts`.
+- Responsible for transient overlays such as:
+  - selection outlines and resize handles
+  - binding hints and snap guides
+  - text/linear-element editing affordances
+  - remote cursors and collaborator viewport hints
+  - scrollbars and hover indicators
+- This separation keeps transient interaction repainting from forcing a full redraw of every stable element on every pointer move.
+
+### Render Triggers and Performance Characteristics
+
+- The scene model exposes `triggerUpdate()` and a callback registry so rendering is invalidated explicitly.
+- The hosted app enables throttled rendering through `window.EXCALIDRAW_THROTTLE_RENDER = true`.
+- The renderer normalizes for device pixel ratio and zoom before painting.
+- The Vite build also supports runtime performance by splitting large optional code paths:
+  - non-core locales
+  - Mermaid conversion
+  - CodeMirror-related chunks
+- Export paths are separate from interactive painting, with dedicated renderers for SVG and other export flows.
+
+## Package Dependencies
+
+### Internal Dependency Graph
+
+```text
+@excalidraw/common
+  |
+  +--> @excalidraw/math
+  |       |
+  |       +--> @excalidraw/element
+  |               |
+  |               +--> @excalidraw/excalidraw
+  |
+  \--> shared by all workspace packages
+
+@excalidraw/utils
+  - supplementary utilities with separate release cadence
+
+excalidraw-app
+  - consumes @excalidraw/excalidraw
+  - also imports package internals directly through Vite aliases in development
+```
+
+### Package Roles and Boundaries
+
+- `@excalidraw/common`
+  - lowest-level shared helpers and constants
+- `@excalidraw/math`
+  - depends on `@excalidraw/common`
+  - provides geometry primitives used by selection, transforms, and drawing math
+- `@excalidraw/element`
+  - depends on `@excalidraw/common` and `@excalidraw/math`
+  - provides element types, mutation helpers, scene storage, bindings, and element rendering primitives
+- `@excalidraw/excalidraw`
+  - depends on `@excalidraw/common`, `@excalidraw/math`, and `@excalidraw/element`
+  - packages the reusable editor runtime and public React API
+- `@excalidraw/utils`
+  - offers standalone utilities and does not sit in the critical runtime chain of the hosted app
+
+### External Runtime Dependencies
+
+- UI/runtime: React 19, React DOM, Jotai, Jotai Scope
+- Persistence and sync: Firebase, Socket.IO client, `idb-keyval`
+- Rendering and export support: RoughJS, CodeMirror, Mermaid conversion, image/font helpers
+- Operations: Sentry, Vite, Vite PWA tooling
+
+### Architectural Constraints
+
+- The browser is the system of record during active editing; remote systems extend, but do not replace, local behavior.
+- Collaboration correctness depends on client reconciliation and sync contracts rather than authoritative server-side domain logic.
+- Security for collaboration and share links depends on client-side encryption and keys kept in URL fragments.
+- Because the app resolves workspace packages to source during development, package boundaries must remain disciplined even when cross-package imports are convenient.
